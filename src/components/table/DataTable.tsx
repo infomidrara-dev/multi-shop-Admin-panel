@@ -18,7 +18,6 @@ interface DataTableProps<T> {
   emptyMessage?: string;
   loading?: boolean;
 }
-
 export function DataTable<T extends Record<string, any>>({
   columns,
   data,
