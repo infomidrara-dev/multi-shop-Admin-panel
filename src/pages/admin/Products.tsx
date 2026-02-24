@@ -41,9 +41,8 @@ interface ProductVariant {
 
 interface Product {
   id: string;
-  display_id?: string | null; // ← human-friendly ID e.g. PRD-1001
+  display_id?: string | null;
   name: string;
-  slug: string;
   short_description: string | null;
   description: string | null;
   category_id: string | null;
@@ -51,6 +50,7 @@ interface Product {
   discounted_price: number | null;
   is_active: boolean;
   is_featured: boolean;
+  deleted_at?: string | null;
   created_at: string;
   categories: { name: string } | null;
   product_variants: Pick<ProductVariant, "stock">[];
@@ -114,7 +114,6 @@ interface VariantGroup {
 
 interface ProductForm {
   name: string;
-  slug: string;
   short_description: string;
   description: string;
   category_id: string;
@@ -128,7 +127,7 @@ interface ProductForm {
 }
 
 const emptyForm: ProductForm = {
-  name: "", slug: "", short_description: "", description: "", category_id: "",
+  name: "", short_description: "", description: "", category_id: "",
   base_price: "", discounted_price: "",
   is_active: true, is_featured: false,
   variantGroups: [], images: [], imagePreviews: [],
@@ -216,6 +215,21 @@ function buildCombinations(
   return combos;
 }
 
+// ─── Helper: extract storage path from public URL ────────────────────────────
+
+function extractStoragePath(imageUrl: string): string | null {
+  try {
+    const url = new URL(imageUrl);
+    const marker = "/object/public/products/";
+    const idx = url.pathname.indexOf(marker);
+    if (idx !== -1) return url.pathname.slice(idx + marker.length);
+    const fallback = url.pathname.split("/products/");
+    return fallback.length > 1 ? fallback[1] : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function Products() {
@@ -257,14 +271,15 @@ export default function Products() {
   const loadProducts = useCallback(async () => {
     setLoading(true);
 
+    // Only load non-deleted products
     let query = supabase
       .from("products")
       .select(
         "*, categories(name), product_variants(stock), product_images(image_url, is_primary)",
         { count: "exact" }
-      );
+      )
+      .is("deleted_at", null); // ← soft delete filter
 
-    // ── Search by name OR display_id ────────────────────────────────────────
     if (searchDebounce) {
       query = query.or(
         `name.ilike.%${searchDebounce}%,display_id.ilike.%${searchDebounce}%`
@@ -279,19 +294,22 @@ export default function Products() {
     setProducts((data as Product[]) || []);
     setTotal(count || 0);
 
-    // Stats
+    // Stats — also exclude soft-deleted
     const { data: allVariants } = await supabase
       .from("product_variants")
-      .select("stock, product_id");
+      .select("stock, product_id")
+      .is("deleted_at", null);
 
     const { count: activeCount } = await supabase
       .from("products")
       .select("id", { count: "exact", head: true })
-      .eq("is_active", true);
+      .eq("is_active", true)
+      .is("deleted_at", null);
 
     const { count: totalCount } = await supabase
       .from("products")
-      .select("id", { count: "exact", head: true });
+      .select("id", { count: "exact", head: true })
+      .is("deleted_at", null);
 
     const variantsByProduct: Record<string, number> = {};
     (allVariants || []).forEach((v) => {
@@ -337,7 +355,8 @@ export default function Products() {
     const { data: variants } = await supabase
       .from("product_variants")
       .select("*")
-      .eq("product_id", id);
+      .eq("product_id", id)
+      .is("deleted_at", null);
 
     if (product) {
       setEditingId(id);
@@ -352,7 +371,6 @@ export default function Products() {
       const colors = [...new Set(combinations.map((c) => c.color).filter(Boolean))];
       setForm({
         name: product.name,
-        slug: product.slug,
         short_description: product.short_description || "",
         description: product.description || "",
         category_id: product.category_id || "",
@@ -371,7 +389,11 @@ export default function Products() {
   async function openView(product: Product) {
     setViewProduct(product);
     const [{ data: variants }, { data: images }] = await Promise.all([
-      supabase.from("product_variants").select("*").eq("product_id", product.id),
+      supabase
+        .from("product_variants")
+        .select("*")
+        .eq("product_id", product.id)
+        .is("deleted_at", null),
       supabase
         .from("product_images")
         .select("*")
@@ -420,10 +442,6 @@ export default function Products() {
   }
 
   function handleNameChange(name: string) {
-    const slug = name
-      .toLowerCase()
-      .replace(/\s+/g, "-")
-      .replace(/[^a-z0-9-]/g, "");
     setForm((f) => {
       const variantGroups = f.variantGroups.map((group) => ({
         ...group,
@@ -432,7 +450,7 @@ export default function Products() {
           sku: c.skuManuallyEdited ? c.sku : generateSku(name, c.size, c.color),
         })),
       }));
-      return { ...f, name, slug, variantGroups };
+      return { ...f, name, variantGroups };
     });
   }
 
@@ -488,9 +506,16 @@ export default function Products() {
     try {
       let productId = editingId;
 
+      // Slug is required by the DB schema — auto-generate silently.
+      const baseSlug = form.name
+        .toLowerCase()
+        .replace(/\s+/g, "-")
+        .replace(/[^a-z0-9-]/g, "");
+      const slug = editingId ? baseSlug : `${baseSlug}-${Date.now()}`;
+
       const productData = {
         name: form.name,
-        slug: form.slug,
+        slug,
         short_description: form.short_description || null,
         description: form.description || null,
         category_id: form.category_id || null,
@@ -518,9 +543,13 @@ export default function Products() {
 
       if (!productId) throw new Error("Failed to get product ID");
 
-      // ── Variants ────────────────────────────────────────────────────────────
+      // ── Variants ─────────────────────────────────────────────────────────────
       if (editingId) {
-        await supabase.from("product_variants").delete().eq("product_id", editingId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (supabase.from("product_variants") as any)
+          .update({ deleted_at: new Date().toISOString() })
+          .eq("product_id", editingId)
+          .is("deleted_at", null);
       }
 
       const variantRows = form.variantGroups.flatMap((group) =>
@@ -587,36 +616,35 @@ export default function Products() {
     setSaving(false);
   }
 
-  // ─── Delete ─────────────────────────────────────────────────────────────────
+  // ─── Soft Delete ─────────────────────────────────────────────────────────────
 
   async function handleDelete() {
     if (!deleteId) return;
     setDeleting(true);
+    try {
+      const now = new Date().toISOString();
 
-    const { data: images } = await supabase
-      .from("product_images")
-      .select("image_url")
-      .eq("product_id", deleteId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error: variantError } = await (supabase.from("product_variants") as any)
+        .update({ deleted_at: now })
+        .eq("product_id", deleteId);
 
-    if (images && images.length > 0) {
-      const paths = images
-        .map((img: { image_url: string }) => {
-          const url = new URL(img.image_url);
-          const parts = url.pathname.split("/products/");
-          return parts[1] ?? null;
-        })
-        .filter((p): p is string => p !== null);
+      if (variantError) throw new Error(`Failed to remove variants: ${variantError.message}`);
 
-      if (paths.length > 0) {
-        await supabase.storage.from("products").remove(paths);
-      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error: productError } = await (supabase.from("products") as any)
+        .update({ deleted_at: now, is_active: false })
+        .eq("id", deleteId);
+
+      if (productError) throw new Error(`Failed to delete product: ${productError.message}`);
+
+      toast.success("Product deleted");
+      setDeleteId(null);
+      loadProducts();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete product");
     }
-
-    await supabase.from("products").delete().eq("id", deleteId);
-    toast.success("Product deleted");
-    setDeleteId(null);
     setDeleting(false);
-    loadProducts();
   }
 
   // ─── Table columns ──────────────────────────────────────────────────────────
@@ -638,7 +666,6 @@ export default function Products() {
         );
       },
     },
-    // ── NEW: display_id column ─────────────────────────────────────────────
     {
       key: "display_id",
       label: "Product ID",
@@ -666,15 +693,15 @@ export default function Products() {
           {r.discounted_price ? (
             <>
               <p className="font-semibold text-sm">
-                ${Number(r.discounted_price).toFixed(2)}
+                ৳{Number(r.discounted_price).toFixed(2)}
               </p>
               <p className="text-xs text-muted-foreground line-through">
-                ${Number(r.base_price).toFixed(2)}
+                ৳{Number(r.base_price).toFixed(2)}
               </p>
             </>
           ) : (
             <p className="font-semibold text-sm">
-              ${Number(r.base_price).toFixed(2)}
+              ৳{Number(r.base_price).toFixed(2)}
             </p>
           )}
         </div>
@@ -738,7 +765,6 @@ export default function Products() {
         <StatCard title="Out of Stock" value={stats.outOfStock} icon={XCircle} variant="destructive" />
       </div>
 
-      {/* ── Updated placeholder to reflect ID search ── */}
       <Input
         placeholder="Search by name or product ID (e.g. PRD-1001)..."
         value={search}
@@ -767,27 +793,16 @@ export default function Products() {
           </DialogHeader>
           <div className="space-y-5">
 
-            {/* Name & Slug */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>
-                  Name <span className="text-destructive">*</span>
-                </Label>
-                <Input
-                  value={form.name}
-                  onChange={(e) => handleNameChange(e.target.value)}
-                  placeholder="e.g. Panjabi"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Slug</Label>
-                <Input
-                  value={form.slug}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, slug: e.target.value }))
-                  }
-                />
-              </div>
+            {/* Name */}
+            <div className="space-y-2">
+              <Label>
+                Name <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                value={form.name}
+                onChange={(e) => handleNameChange(e.target.value)}
+                placeholder="e.g. Panjabi"
+              />
             </div>
 
             {/* Short Description */}
@@ -886,10 +901,10 @@ export default function Products() {
               Number(form.discounted_price) < Number(form.base_price) && (
                 <div className="flex items-center gap-2 text-sm">
                   <span className="text-muted-foreground line-through">
-                    ${Number(form.base_price).toFixed(2)}
+                    ৳{Number(form.base_price).toFixed(2)}
                   </span>
                   <span className="font-semibold text-green-600">
-                    ${Number(form.discounted_price).toFixed(2)}
+                    ৳{Number(form.discounted_price).toFixed(2)}
                   </span>
                   <Badge variant="secondary" className="text-green-700 bg-green-100">
                     {Math.round(
@@ -1107,7 +1122,7 @@ export default function Products() {
         onClose={() => setDeleteId(null)}
         onConfirm={handleDelete}
         title="Delete Product"
-        description="This will permanently delete this product and all its variants and images."
+        description="This product will be removed from your store. Order history will be preserved."
         confirmLabel="Delete"
         loading={deleting}
       />
@@ -1120,7 +1135,6 @@ export default function Products() {
           </SheetHeader>
           {viewProduct && (
             <div className="mt-6 space-y-6">
-              {/* Product images */}
               {viewImages.length > 0 ? (
                 <div className="flex gap-2 flex-wrap">
                   {viewImages.map((img) => (
@@ -1145,7 +1159,6 @@ export default function Products() {
               )}
 
               <div className="space-y-2 text-sm">
-                {/* ── display_id shown in view sheet ── */}
                 {viewProduct.display_id && (
                   <p className="text-muted-foreground">
                     Product ID:{" "}
@@ -1161,10 +1174,10 @@ export default function Products() {
                   {viewProduct.discounted_price ? (
                     <>
                       <span className="font-bold text-base">
-                        ${Number(viewProduct.discounted_price).toFixed(2)}
+                        ৳{Number(viewProduct.discounted_price).toFixed(2)}
                       </span>
                       <span className="text-muted-foreground line-through text-sm">
-                        ${Number(viewProduct.base_price).toFixed(2)}
+                        ৳{Number(viewProduct.base_price).toFixed(2)}
                       </span>
                       <Badge variant="secondary" className="text-green-700 bg-green-100 text-xs">
                         {Math.round(
@@ -1174,7 +1187,7 @@ export default function Products() {
                     </>
                   ) : (
                     <span className="font-bold text-base">
-                      ${Number(viewProduct.base_price).toFixed(2)}
+                      ৳{Number(viewProduct.base_price).toFixed(2)}
                     </span>
                   )}
                 </div>

@@ -1,8 +1,8 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, forwardRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { StatCard } from "@/components/cards/StatCard";
 import { DataTable, Column } from "@/components/table/DataTable";
-import { DollarSign, CheckCircle, Truck, XCircle, Eye, MapPin, Phone, User, Package, CreditCard, Hash } from "lucide-react";
+import { CheckCircle, Truck, XCircle, Eye, MapPin, Phone, User, Package, CreditCard, Hash, type LucideProps } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,32 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Separator } from "@/components/ui/separator";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import { format } from "date-fns";
+import { toast } from "sonner";
+
+
+// ─── Taka Icon (forwardRef to satisfy Lucide's icon type) ────────────────────
+const TakaIcon = forwardRef<SVGSVGElement, LucideProps>(
+  ({ className, size = 24, ...props }, ref) => (
+    <svg
+      ref={ref}
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      {...props}
+    >
+      <text x="12" y="17" textAnchor="middle" fontSize="16" fontWeight="bold"
+        stroke="none" fill="currentColor" fontFamily="serif">৳</text>
+    </svg>
+  )
+);
+TakaIcon.displayName = "TakaIcon";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,6 +62,7 @@ interface Profile {
 interface Order {
   id: string;
   display_id?: string | null;
+  order_id?: string | null;
   order_status: string;
   total_amount: number;
   created_at: string;
@@ -58,7 +85,18 @@ interface OrderItem {
   id: string;
   quantity: number;
   unit_price: number;
+  product_variant_id: string | null;
   product_variants: OrderItemVariant | null;
+}
+
+// Stock preview row shown before confirming a stock-deducting status change
+interface StockPreviewRow {
+  productName: string;
+  variantLabel: string;
+  sku: string;
+  currentStock: number;
+  deductQty: number;
+  afterStock: number;
 }
 
 interface ChartEntry {
@@ -86,17 +124,119 @@ function parseShipping(raw: string | ShippingAddress | null | undefined): Shippi
   try { return JSON.parse(raw); } catch { return null; }
 }
 
-function shortOrderId(uuid: string) {
-  return "#" + uuid.replace(/-/g, "").slice(0, 8).toUpperCase();
-}
-
 function displayOrderId(order: Order) {
-  return order.display_id ?? shortOrderId(order.id);
+  return order.order_id ?? order.display_id ?? ("#" + order.id.replace(/-/g, "").slice(0, 8).toUpperCase());
 }
 
 const ORDER_STATUSES = ["pending", "processing", "shipped", "delivered", "cancelled"];
 const PAYMENT_STATUSES = ["pending", "paid", "failed"];
 const PAYMENT_METHODS = ["cod", "card", "bank_transfer"];
+
+const STOCK_DEDUCT_STATUSES = new Set(["shipped", "delivered"]);
+
+// ─── Stock preview helper ─────────────────────────────────────────────────────
+// Fetches current stock for each item in an order and returns preview rows.
+
+async function buildStockPreview(orderId: string): Promise<StockPreviewRow[]> {
+  const { data: items, error } = await supabase
+    .from("order_items")
+    .select("quantity, product_variant_id, product_variants(size, color, sku, stock, products(name))")
+    .eq("order_id", orderId);
+
+  if (error || !items) return [];
+
+  return (items as unknown as OrderItem[]).map((item) => {
+    const variant = item.product_variants;
+    const productName = variant?.products?.name || "Unknown Product";
+    const variantParts = [variant?.size, variant?.color].filter(Boolean);
+    const variantLabel = variantParts.length > 0 ? variantParts.join(" / ") : "—";
+    const sku = variant?.sku || "—";
+    const currentStock = variant?.stock ?? 0;
+    const deductQty = item.quantity;
+    const afterStock = Math.max(0, currentStock - deductQty);
+
+    return { productName, variantLabel, sku, currentStock, deductQty, afterStock };
+  });
+}
+
+// ─── Stock Reduction Preview Component ───────────────────────────────────────
+
+function StockReductionPreview({ rows }: { rows: StockPreviewRow[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+      <p className="text-xs font-semibold text-amber-700 flex items-center gap-1">
+        ⚠ Stock will be reduced upon saving:
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-amber-600 border-b border-amber-200">
+              <th className="text-left pb-1 font-semibold">Product</th>
+              <th className="text-left pb-1 font-semibold">SKU</th>
+              <th className="text-center pb-1 font-semibold">Current</th>
+              <th className="text-center pb-1 font-semibold">Deduct</th>
+              <th className="text-center pb-1 font-semibold">After</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i} className="border-b border-amber-100 last:border-0">
+                <td className="py-1 pr-2">
+                  <p className="font-medium text-gray-800">{row.productName}</p>
+                  {row.variantLabel !== "—" && (
+                    <p className="text-gray-500">{row.variantLabel}</p>
+                  )}
+                </td>
+                <td className="py-1 pr-2 font-mono text-gray-600">{row.sku}</td>
+                <td className="py-1 text-center font-medium text-gray-700">{row.currentStock}</td>
+                <td className="py-1 text-center font-semibold text-red-500">−{row.deductQty}</td>
+                <td className="py-1 text-center">
+                  <span className={`font-bold ${row.afterStock === 0 ? "text-red-600" : row.afterStock <= 5 ? "text-amber-600" : "text-green-700"}`}>
+                    {row.afterStock}
+                    {row.afterStock === 0 && (
+                      <span className="ml-1 text-red-500 font-normal">(out of stock)</span>
+                    )}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Stock deduction helper ───────────────────────────────────────────────────
+
+async function deductStockForOrder(orderId: string) {
+  const { data: items, error } = await supabase
+    .from("order_items")
+    .select("product_variant_id, quantity")
+    .eq("order_id", orderId);
+
+  if (error || !items || items.length === 0) return;
+
+  for (const item of items) {
+    if (!item.product_variant_id) continue;
+
+    const { data: variant } = await supabase
+      .from("product_variants")
+      .select("stock")
+      .eq("id", item.product_variant_id)
+      .single();
+
+    if (!variant) continue;
+
+    const newStock = Math.max(0, (variant.stock ?? 0) - item.quantity);
+
+    await supabase
+      .from("product_variants")
+      .update({ stock: newStock })
+      .eq("id", item.product_variant_id);
+  }
+}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -127,11 +267,19 @@ export default function Sales() {
   const [newPaymentMethod, setNewPaymentMethod] = useState("");
   const [updatingPayment, setUpdatingPayment] = useState(false);
 
+  // Stock preview state for detail sheet
+  const [detailStockPreview, setDetailStockPreview] = useState<StockPreviewRow[]>([]);
+  const [loadingDetailPreview, setLoadingDetailPreview] = useState(false);
+
   const [updateOrder, setUpdateOrder] = useState<Order | null>(null);
   const [quickOrderStatus, setQuickOrderStatus] = useState("");
   const [quickPaymentStatus, setQuickPaymentStatus] = useState("");
   const [quickPaymentMethod, setQuickPaymentMethod] = useState("");
   const [quickUpdating, setQuickUpdating] = useState(false);
+
+  // Stock preview state for quick update sheet
+  const [quickStockPreview, setQuickStockPreview] = useState<StockPreviewRow[]>([]);
+  const [loadingQuickPreview, setLoadingQuickPreview] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setSearchDebounce(search), 300);
@@ -198,6 +346,7 @@ export default function Sales() {
           o.profiles?.name?.toLowerCase().includes(term) ||
           shipping?.name?.toLowerCase().includes(term) ||
           shipping?.phone?.includes(term) ||
+          o.order_id?.toLowerCase().includes(term) ||
           o.display_id?.toLowerCase().includes(term)
         );
       });
@@ -216,6 +365,7 @@ export default function Sales() {
     setNewOrderStatus(order.order_status);
     setNewPaymentStatus(order.payments?.[0]?.payment_status || "pending");
     setNewPaymentMethod(order.payments?.[0]?.payment_method || "cod");
+    setDetailStockPreview([]);
     const { data } = await supabase
       .from("order_items")
       .select("*, product_variants(size, color, sku, stock, products(name))")
@@ -223,16 +373,67 @@ export default function Sales() {
     setOrderItems((data || []) as unknown as OrderItem[]);
   }
 
+  // Load stock preview when detail sheet status selector changes
+  async function handleDetailStatusChange(status: string) {
+    setNewOrderStatus(status);
+    setDetailStockPreview([]);
+
+    if (
+      selectedOrder &&
+      STOCK_DEDUCT_STATUSES.has(status) &&
+      !STOCK_DEDUCT_STATUSES.has(selectedOrder.order_status)
+    ) {
+      setLoadingDetailPreview(true);
+      const preview = await buildStockPreview(selectedOrder.id);
+      setDetailStockPreview(preview);
+      setLoadingDetailPreview(false);
+    }
+  }
+
+  // Load stock preview when quick update sheet status selector changes
+  async function handleQuickStatusChange(status: string) {
+    setQuickOrderStatus(status);
+    setQuickStockPreview([]);
+
+    if (
+      updateOrder &&
+      STOCK_DEDUCT_STATUSES.has(status) &&
+      !STOCK_DEDUCT_STATUSES.has(updateOrder.order_status)
+    ) {
+      setLoadingQuickPreview(true);
+      const preview = await buildStockPreview(updateOrder.id);
+      setQuickStockPreview(preview);
+      setLoadingQuickPreview(false);
+    }
+  }
+
   async function handleUpdateOrderStatus() {
     if (!selectedOrder || !newOrderStatus) return;
     setUpdatingOrderStatus(true);
-    const { error } = await supabase
-      .from("orders")
-      .update({ order_status: newOrderStatus })
-      .eq("id", selectedOrder.id);
-    if (!error) {
+    try {
+      const prevStatus = selectedOrder.order_status;
+      const { error } = await supabase
+        .from("orders")
+        .update({ order_status: newOrderStatus })
+        .eq("id", selectedOrder.id);
+
+      if (error) throw error;
+
+      if (
+        STOCK_DEDUCT_STATUSES.has(newOrderStatus) &&
+        !STOCK_DEDUCT_STATUSES.has(prevStatus)
+      ) {
+        await deductStockForOrder(selectedOrder.id);
+        toast.success(`Order marked as ${newOrderStatus} — stock updated`);
+      } else {
+        toast.success("Order status updated");
+      }
+
       setSelectedOrder({ ...selectedOrder, order_status: newOrderStatus });
+      setDetailStockPreview([]);
       await loadData();
+    } catch {
+      toast.error("Failed to update order status");
     }
     setUpdatingOrderStatus(false);
   }
@@ -252,7 +453,10 @@ export default function Sales() {
         ...selectedOrder.payments.slice(1),
       ];
       setSelectedOrder({ ...selectedOrder, payments: updatedPayments });
+      toast.success("Payment updated");
       await loadData();
+    } else {
+      toast.error("Failed to update payment");
     }
     setUpdatingPayment(false);
   }
@@ -260,23 +464,38 @@ export default function Sales() {
   async function handleQuickUpdate() {
     if (!updateOrder) return;
     setQuickUpdating(true);
+    try {
+      const prevStatus = updateOrder.order_status;
 
-    const orderUpdate = supabase
-      .from("orders")
-      .update({ order_status: quickOrderStatus })
-      .eq("id", updateOrder.id);
+      await supabase
+        .from("orders")
+        .update({ order_status: quickOrderStatus })
+        .eq("id", updateOrder.id);
 
-    const paymentId = updateOrder.payments?.[0]?.id;
-    const paymentUpdate = paymentId
-      ? supabase
+      const paymentId = updateOrder.payments?.[0]?.id;
+      if (paymentId) {
+        await supabase
           .from("payments")
           .update({ payment_status: quickPaymentStatus, payment_method: quickPaymentMethod })
-          .eq("id", paymentId)
-      : null;
+          .eq("id", paymentId);
+      }
 
-    await Promise.all([orderUpdate, paymentUpdate].filter(Boolean));
-    setUpdateOrder(null);
-    await loadData();
+      if (
+        STOCK_DEDUCT_STATUSES.has(quickOrderStatus) &&
+        !STOCK_DEDUCT_STATUSES.has(prevStatus)
+      ) {
+        await deductStockForOrder(updateOrder.id);
+        toast.success(`Order marked as ${quickOrderStatus} — stock updated`);
+      } else {
+        toast.success("Order updated");
+      }
+
+      setUpdateOrder(null);
+      setQuickStockPreview([]);
+      await loadData();
+    } catch {
+      toast.error("Failed to update order");
+    }
     setQuickUpdating(false);
   }
 
@@ -355,7 +574,7 @@ export default function Sales() {
     {
       key: "total",
       label: "Total",
-      render: (r) => <span className="font-semibold">${Number(r.total_amount).toFixed(2)}</span>,
+      render: (r) => <span className="font-semibold">৳{Number(r.total_amount).toFixed(2)}</span>,
     },
     {
       key: "date",
@@ -382,6 +601,7 @@ export default function Sales() {
               setQuickOrderStatus(r.order_status);
               setQuickPaymentStatus(r.payments?.[0]?.payment_status || "pending");
               setQuickPaymentMethod(r.payments?.[0]?.payment_method || "cod");
+              setQuickStockPreview([]);
             }}
           >
             Update
@@ -396,7 +616,7 @@ export default function Sales() {
       <h1 className="text-2xl font-bold">Sales</h1>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="Total Sales" value={`$${stats.totalSales.toFixed(2)}`} icon={DollarSign} variant="success" />
+        <StatCard title="Total Sales" value={`৳${stats.totalSales.toFixed(2)}`} icon={TakaIcon} variant="success" />
         <StatCard title="Paid Orders" value={stats.paidOrders} icon={CheckCircle} variant="success" />
         <StatCard title="COD Orders" value={stats.codOrders} icon={Truck} />
         <StatCard title="Cancelled" value={stats.cancelled} icon={XCircle} variant="destructive" />
@@ -429,7 +649,7 @@ export default function Sales() {
               <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
               <XAxis dataKey="month" className="text-xs" />
               <YAxis className="text-xs" />
-              <Tooltip />
+              <Tooltip formatter={(value: number) => [`৳${value.toFixed(2)}`, "Revenue"]} />
               <Bar dataKey="amount" fill="hsl(160, 60%, 40%)" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
@@ -570,8 +790,9 @@ export default function Sales() {
                 <div className="rounded-lg border p-4 space-y-3">
                   <h4 className="font-semibold text-sm">Update Order Status</h4>
                   <Separator />
+
                   <div className="flex gap-2">
-                    <Select value={newOrderStatus} onValueChange={setNewOrderStatus}>
+                    <Select value={newOrderStatus} onValueChange={handleDetailStatusChange}>
                       <SelectTrigger className="flex-1">
                         <SelectValue placeholder="Select status" />
                       </SelectTrigger>
@@ -588,6 +809,14 @@ export default function Sales() {
                       {updatingOrderStatus ? "Saving..." : "Save"}
                     </Button>
                   </div>
+
+                  {/* Stock reduction preview */}
+                  {loadingDetailPreview && (
+                    <p className="text-xs text-muted-foreground animate-pulse">Loading stock preview...</p>
+                  )}
+                  {!loadingDetailPreview && detailStockPreview.length > 0 && (
+                    <StockReductionPreview rows={detailStockPreview} />
+                  )}
                 </div>
 
                 {/* Update Payment */}
@@ -656,8 +885,8 @@ export default function Sales() {
                         </p>
                       </div>
                       <div className="text-right whitespace-nowrap">
-                        <p>{item.quantity} × ${Number(item.unit_price).toFixed(2)}</p>
-                        <p className="text-xs text-muted-foreground">= ${(item.quantity * item.unit_price).toFixed(2)}</p>
+                        <p>{item.quantity} × ৳{Number(item.unit_price).toFixed(2)}</p>
+                        <p className="text-xs text-muted-foreground">= ৳{(item.quantity * item.unit_price).toFixed(2)}</p>
                       </div>
                     </div>
                   ))}
@@ -665,7 +894,7 @@ export default function Sales() {
 
                 <div className="flex justify-between font-bold text-lg px-1">
                   <span>Total</span>
-                  <span>${Number(selectedOrder.total_amount).toFixed(2)}</span>
+                  <span>৳{Number(selectedOrder.total_amount).toFixed(2)}</span>
                 </div>
 
                 {selectedOrder.notes && (
@@ -694,7 +923,7 @@ export default function Sales() {
                   <p className="text-sm font-bold">{displayOrderId(updateOrder)}</p>
                   <p className="text-sm">{shipping?.name || updateOrder.profiles?.name || "Guest"}</p>
                   {shipping?.phone && <p className="text-xs text-muted-foreground">{shipping.phone}</p>}
-                  <p className="text-sm font-semibold">${Number(updateOrder.total_amount).toFixed(2)}</p>
+                  <p className="text-sm font-semibold">৳{Number(updateOrder.total_amount).toFixed(2)}</p>
                 </div>
 
                 <div className="space-y-2">
@@ -703,7 +932,7 @@ export default function Sales() {
                     <span className="text-muted-foreground">Current:</span>
                     <Badge variant={statusVariant(updateOrder.order_status)}>{updateOrder.order_status}</Badge>
                   </div>
-                  <Select value={quickOrderStatus} onValueChange={setQuickOrderStatus}>
+                  <Select value={quickOrderStatus} onValueChange={handleQuickStatusChange}>
                     <SelectTrigger><SelectValue placeholder="Select order status" /></SelectTrigger>
                     <SelectContent>
                       {ORDER_STATUSES.map((s) => (
@@ -711,6 +940,14 @@ export default function Sales() {
                       ))}
                     </SelectContent>
                   </Select>
+
+                  {/* Stock reduction preview for quick update */}
+                  {loadingQuickPreview && (
+                    <p className="text-xs text-muted-foreground animate-pulse">Loading stock preview...</p>
+                  )}
+                  {!loadingQuickPreview && quickStockPreview.length > 0 && (
+                    <StockReductionPreview rows={quickStockPreview} />
+                  )}
                 </div>
 
                 <Separator />
@@ -762,4 +999,3 @@ export default function Sales() {
     </div>
   );
 }
-

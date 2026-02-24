@@ -264,7 +264,7 @@ export default function Dashboard() {
     {
       key: "total",
       label: "Total",
-      render: (r) => <span className="font-semibold">${Number(r.total_amount).toFixed(2)}</span>,
+      render: (r) => <span className="font-semibold">৳{Number(r.total_amount).toFixed(2)}</span>,
     },
     {
       key: "date",
@@ -293,7 +293,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard title="Total Stock" value={stats.totalStock} icon={Package} />
         <StatCard title="Total Orders" value={stats.totalOrders} icon={ShoppingCart} />
-        <StatCard title="Total Revenue" value={`$${stats.totalRevenue.toFixed(2)}`} icon={DollarSign} variant="success" />
+        <StatCard title="Total Revenue" value={`৳${stats.totalRevenue.toFixed(2)}`} icon={DollarSign} variant="success" />
         <StatCard title="Low Stock Alert" value={stats.lowStockCount} icon={AlertTriangle} variant="warning" />
       </div>
 
@@ -305,7 +305,7 @@ export default function Dashboard() {
               <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
               <XAxis dataKey="date" className="text-xs" />
               <YAxis className="text-xs" />
-              <Tooltip />
+              <Tooltip formatter={(value: number) => [`৳${value.toFixed(2)}`, "Sales"]} />
               <Bar dataKey="amount" fill="hsl(224, 60%, 25%)" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
@@ -468,9 +468,9 @@ export default function Dashboard() {
                         </p>
                       </div>
                       <div className="text-right whitespace-nowrap">
-                        <p>{item.quantity} × ${Number(item.unit_price).toFixed(2)}</p>
+                        <p>{item.quantity} × ৳{Number(item.unit_price).toFixed(2)}</p>
                         <p className="text-xs text-muted-foreground">
-                          = ${(item.quantity * item.unit_price).toFixed(2)}
+                          = ৳{(item.quantity * item.unit_price).toFixed(2)}
                         </p>
                       </div>
                     </div>
@@ -479,7 +479,7 @@ export default function Dashboard() {
 
                 <div className="flex justify-between font-bold text-lg px-1">
                   <span>Total</span>
-                  <span>${Number(selectedOrder.total_amount).toFixed(2)}</span>
+                  <span>৳{Number(selectedOrder.total_amount).toFixed(2)}</span>
                 </div>
 
                 {selectedOrder.notes && (
