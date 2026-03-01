@@ -139,9 +139,11 @@ function StatusBadge({
     return (
       <span
         className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold tracking-wide
-          ${urgent
-            ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
-            : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"}`}
+          ${
+            urgent
+              ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+              : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+          }`}
       >
         <span
           className={`w-1.5 h-1.5 rounded-full animate-pulse ${
@@ -234,7 +236,8 @@ function CurrentPlanCard({ sub }: { sub: ShopSubscription }) {
       {sub.status === "expired" && (
         <div className="mt-5 p-4 rounded-xl bg-red-500/10 border border-red-500/20">
           <p className="text-sm text-red-300">
-            ⚠️ Your subscription has expired. Renew a plan below to continue using all features.
+            ⚠️ Your subscription has expired. Renew a plan below to continue using all
+            features.
           </p>
         </div>
       )}
@@ -242,7 +245,8 @@ function CurrentPlanCard({ sub }: { sub: ShopSubscription }) {
       {sub.status === "none" && (
         <div className="mt-5 p-4 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
           <p className="text-sm text-indigo-300">
-            🚀 You don't have an active plan. Choose a plan below to start selling on your shop.
+            🚀 You don't have an active plan. Choose a plan below to start selling on your
+            shop.
           </p>
         </div>
       )}
@@ -445,8 +449,8 @@ function PaymentModal({
               </div>
               <h3 className="text-xl font-bold text-white mb-2">Submission Received!</h3>
               <p className="text-slate-400 text-sm leading-relaxed mb-1">
-                Your <span className="text-white font-medium">{plan.name}</span> plan activation
-                request has been submitted.
+                Your <span className="text-white font-medium">{plan.name}</span> plan
+                activation request has been submitted.
               </p>
               <p className="text-slate-400 text-sm leading-relaxed mb-6">
                 Our team will verify your bKash payment and activate your subscription within{" "}
@@ -547,10 +551,30 @@ function PaymentModal({
                     <ol className="space-y-3">
                       {(
                         [
-                          <>Open your <span className="text-pink-400 font-medium">bKash app</span> and go to <strong className="text-white">Send Money</strong></>,
-                          <>Send exactly <span className="text-white font-bold">৳{plan.price.toLocaleString()}</span> to the number below</>,
-                          <>Enter your Shop ID <span className="font-mono text-indigo-300 bg-slate-700/50 px-1.5 py-0.5 rounded text-xs">{shopId}</span> as the reference / note</>,
-                          <>Copy the <span className="text-amber-400 font-medium">Transaction ID</span> from the confirmation screen</>,
+                          <>
+                            Open your{" "}
+                            <span className="text-pink-400 font-medium">bKash app</span> and
+                            go to <strong className="text-white">Send Money</strong>
+                          </>,
+                          <>
+                            Send exactly{" "}
+                            <span className="text-white font-bold">
+                              ৳{plan.price.toLocaleString()}
+                            </span>{" "}
+                            to the number below
+                          </>,
+                          <>
+                            Enter your Shop ID{" "}
+                            <span className="font-mono text-indigo-300 bg-slate-700/50 px-1.5 py-0.5 rounded text-xs">
+                              {shopId}
+                            </span>{" "}
+                            as the reference / note
+                          </>,
+                          <>
+                            Copy the{" "}
+                            <span className="text-amber-400 font-medium">Transaction ID</span>{" "}
+                            from the confirmation screen
+                          </>,
                           <>Come back here and fill in the form on the next step</>,
                         ] as React.ReactNode[]
                       ).map((item, i) => (
@@ -614,7 +638,9 @@ function PaymentModal({
                         type="text"
                         placeholder="e.g. BKS-20250301-XXXXX"
                         value={form.transactionId}
-                        onChange={(e) => setForm({ ...form, transactionId: e.target.value })}
+                        onChange={(e) =>
+                          setForm({ ...form, transactionId: e.target.value })
+                        }
                         className="w-full px-4 py-3 rounded-xl bg-slate-800 border border-slate-700/60 text-white text-sm font-mono placeholder-slate-600 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 transition-colors"
                       />
                     </div>
@@ -642,7 +668,9 @@ function PaymentModal({
                         type="tel"
                         placeholder="01XXXXXXXXX"
                         value={form.phoneNumber}
-                        onChange={(e) => setForm({ ...form, phoneNumber: e.target.value })}
+                        onChange={(e) =>
+                          setForm({ ...form, phoneNumber: e.target.value })
+                        }
                         className="w-full px-4 py-3 rounded-xl bg-slate-800 border border-slate-700/60 text-white text-sm font-mono placeholder-slate-600 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 transition-colors"
                       />
                     </div>
@@ -691,8 +719,9 @@ function PaymentModal({
                         )}
                       </div>
                       <span className="text-xs text-slate-400 leading-relaxed">
-                        I confirm that I've sent the correct amount and the transaction ID above
-                        is accurate. I understand activation may take up to 4 business hours.
+                        I confirm that I've sent the correct amount and the transaction ID
+                        above is accurate. I understand activation may take up to 4 business
+                        hours.
                       </span>
                     </label>
                   </div>
@@ -772,18 +801,31 @@ export default function SubscriptionPage() {
       setFetchError(null);
 
       /**
-       * Fetches the shop row for the logged-in user.
+       * Joins shops → shop_subscriptions to get the current plan + expiry.
        *
-       * Expected columns (adjust if your schema differs):
-       *   shop_code              → displayed as "Shop ID"
-       *   name                   → displayed as shop name
-       *   subscription_plan      → plan id string, e.g. "growth"
-       *   subscription_expires_at→ ISO date string or null
+       * shops columns:
+       *   shop_code     → displayed as "Shop ID"
+       *   name          → displayed as shop name
+       *   current_plan  → subscription_plan_enum e.g. "growth" | "starter" | "pro"
+       *
+       * shop_subscriptions columns:
+       *   status              → subscription_status_enum
+       *   current_period_end  → expiry timestamp
+       *
+       * NOTE: owner_id (not user_id) is the FK on shops that references auth.users.
        */
       const { data, error } = await supabase
         .from("shops")
-        .select("shop_code, name, subscription_plan, subscription_expires_at")
-        .eq("user_id", user!.id)
+        .select(`
+          shop_code,
+          name,
+          current_plan,
+          shop_subscriptions (
+            status,
+            current_period_end
+          )
+        `)
+        .eq("owner_id", user!.id)
         .maybeSingle();
 
       if (error || !data) {
@@ -791,8 +833,22 @@ export default function SubscriptionPage() {
         return;
       }
 
-      const planId: string | null = data.subscription_plan ?? null;
-      const expiresAt: string | null = data.subscription_expires_at ?? null;
+      // Pick the subscription with the furthest-out period_end (most recent/active cycle)
+      const subs = data.shop_subscriptions as
+        | { status: string; current_period_end: string }[]
+        | null;
+
+      const latestSub =
+        subs
+          ?.slice()
+          .sort(
+            (a, b) =>
+              new Date(b.current_period_end).getTime() -
+              new Date(a.current_period_end).getTime()
+          )[0] ?? null;
+
+      const planId: string | null = data.current_plan ?? null;
+      const expiresAt: string | null = latestSub?.current_period_end ?? null;
       const daysLeft = calcDaysLeft(expiresAt);
       const status = deriveStatus(expiresAt, planId);
       const matchedPlan = PLANS.find((p) => p.id === planId);

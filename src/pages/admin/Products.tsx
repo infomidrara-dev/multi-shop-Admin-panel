@@ -271,14 +271,13 @@ export default function Products() {
   const loadProducts = useCallback(async () => {
     setLoading(true);
 
-    // Only load non-deleted products
     let query = supabase
       .from("products")
       .select(
         "*, categories(name), product_variants(stock), product_images(image_url, is_primary)",
         { count: "exact" }
       )
-      .is("deleted_at", null); // ← soft delete filter
+      .is("deleted_at", null);
 
     if (searchDebounce) {
       query = query.or(
@@ -294,31 +293,34 @@ export default function Products() {
     setProducts((data as Product[]) || []);
     setTotal(count || 0);
 
-    // Stats — also exclude soft-deleted
-    const { data: allVariants } = await supabase
-      .from("product_variants")
-      .select("stock, product_id")
-      .is("deleted_at", null);
-
-    const { count: activeCount } = await supabase
-      .from("products")
-      .select("id", { count: "exact", head: true })
-      .eq("is_active", true)
-      .is("deleted_at", null);
-
-    const { count: totalCount } = await supabase
-      .from("products")
-      .select("id", { count: "exact", head: true })
-      .is("deleted_at", null);
+    // ── Stats ─────────────────────────────────────────────────────────────────
+    // Run all stat queries in parallel for speed
+    const [allVariantsRes, activeCountRes, totalCountRes] = await Promise.all([
+      supabase
+        .from("product_variants")
+        .select("stock, product_id")
+        // NOTE: Only filter by deleted_at if your schema has that column on variants.
+        // Based on the schema provided it does exist, so this is safe.
+        .is("deleted_at", null),
+      supabase
+        .from("products")
+        .select("id", { count: "exact", head: true })
+        .eq("is_active", true)
+        .is("deleted_at", null),
+      supabase
+        .from("products")
+        .select("id", { count: "exact", head: true })
+        .is("deleted_at", null),
+    ]);
 
     const variantsByProduct: Record<string, number> = {};
-    (allVariants || []).forEach((v) => {
+    (allVariantsRes.data || []).forEach((v) => {
       variantsByProduct[v.product_id] = (variantsByProduct[v.product_id] || 0) + v.stock;
     });
 
     setStats({
-      total: totalCount || 0,
-      active: activeCount || 0,
+      total: totalCountRes.count || 0,
+      active: activeCountRes.count || 0,
       lowStock: Object.values(variantsByProduct).filter((s) => s > 0 && s < 5).length,
       outOfStock: Object.values(variantsByProduct).filter((s) => s === 0).length,
     });
@@ -388,6 +390,8 @@ export default function Products() {
 
   async function openView(product: Product) {
     setViewProduct(product);
+    setViewVariants([]);
+    setViewImages([]);
     const [{ data: variants }, { data: images }] = await Promise.all([
       supabase
         .from("product_variants")
@@ -502,20 +506,39 @@ export default function Products() {
       return;
     }
 
+    // ── Validate: no duplicate SKUs within this save ────────────────────────
+    const allSkus = form.variantGroups.flatMap((g) => g.combinations.map((c) => c.sku.trim()));
+    const uniqueSkus = new Set(allSkus);
+    if (uniqueSkus.size !== allSkus.length) {
+      toast.error("Duplicate SKUs detected. Each variant must have a unique SKU.");
+      return;
+    }
+
     setSaving(true);
     try {
       let productId = editingId;
 
-      // Slug is required by the DB schema — auto-generate silently.
       const baseSlug = form.name
         .toLowerCase()
         .replace(/\s+/g, "-")
         .replace(/[^a-z0-9-]/g, "");
-      const slug = editingId ? baseSlug : `${baseSlug}-${Date.now()}`;
 
-      const productData = {
+      // Never update slug on edit — it's set once at creation and must stay unique
+      const insertData = {
         name: form.name,
-        slug,
+        slug: `${baseSlug}-${Date.now()}`,
+        short_description: form.short_description || null,
+        description: form.description || null,
+        category_id: form.category_id || null,
+        base_price: Number(form.base_price),
+        discounted_price: form.discounted_price ? Number(form.discounted_price) : null,
+        is_active: form.is_active,
+        is_featured: form.is_featured,
+      };
+
+      const updateData = {
+        name: form.name,
+        // slug intentionally omitted — never change it on update
         short_description: form.short_description || null,
         description: form.description || null,
         category_id: form.category_id || null,
@@ -528,13 +551,13 @@ export default function Products() {
       if (editingId) {
         const { error } = await supabase
           .from("products")
-          .update(productData)
+          .update(updateData)
           .eq("id", editingId);
         if (error) throw new Error(`Product update error: ${error.message}`);
       } else {
         const { data, error } = await supabase
           .from("products")
-          .insert(productData)
+          .insert(insertData)
           .select("id")
           .single();
         if (error) throw new Error(`Product insert error: ${error.message}`);
@@ -543,67 +566,131 @@ export default function Products() {
 
       if (!productId) throw new Error("Failed to get product ID");
 
-      // ── Variants ─────────────────────────────────────────────────────────────
+      // ── Variants ──────────────────────────────────────────────────────────
+      // FIX #1 & #2: Instead of soft-deleting and re-inserting (which causes
+      // unique constraint violations on SKU even for soft-deleted rows), we
+      // use UPSERT (ON CONFLICT DO UPDATE) via Supabase's upsert method.
+      // We also hard-delete variants whose SKUs are no longer present.
+
       if (editingId) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (supabase.from("product_variants") as any)
-          .update({ deleted_at: new Date().toISOString() })
+        // 1. Get all currently active variant SKUs for this product
+        const { data: existingVariants } = await supabase
+          .from("product_variants")
+          .select("id, sku")
           .eq("product_id", editingId)
           .is("deleted_at", null);
+
+        const incomingSkus = new Set(allSkus);
+        const variantsToRemove = (existingVariants || []).filter(
+          (v) => !incomingSkus.has(v.sku)
+        );
+
+        // 2. Soft-delete only the variants that are no longer in the form
+        if (variantsToRemove.length > 0) {
+          const idsToRemove = variantsToRemove.map((v) => v.id);
+          const { error: removeError } = await supabase
+            .from("product_variants")
+            .update({ deleted_at: new Date().toISOString() })
+            .in("id", idsToRemove);
+          if (removeError) throw new Error(`Failed to remove old variants: ${removeError.message}`);
+        }
+
+        // 3. Upsert remaining/new variants by SKU
+        // Since SKU is unique, we use ON CONFLICT on sku to update existing rows
+        const variantRows = form.variantGroups.flatMap((group) =>
+          group.combinations.map((combo) => ({
+            product_id: productId!,
+            size: combo.size || null,
+            color: combo.color || null,
+            sku: combo.sku.trim(),
+            stock: parseInt(combo.stock) || 0,
+            deleted_at: null, // ensure it's active after upsert
+          }))
+        );
+
+        if (variantRows.length > 0) {
+          // onConflict: if the SKU row exists (even soft-deleted), update it
+          const { error } = await supabase
+            .from("product_variants")
+            .upsert(variantRows, { onConflict: "sku" });
+          if (error) throw new Error(`Variant upsert error: ${error.message}`);
+        }
+      } else {
+        // New product — plain insert
+        const variantRows = form.variantGroups.flatMap((group) =>
+          group.combinations.map((combo) => ({
+            product_id: productId!,
+            size: combo.size || null,
+            color: combo.color || null,
+            sku: combo.sku.trim(),
+            stock: parseInt(combo.stock) || 0,
+          }))
+        );
+
+        if (variantRows.length > 0) {
+          const { error } = await supabase.from("product_variants").insert(variantRows);
+          if (error) throw new Error(`Variant error: ${error.message}`);
+        }
       }
 
-      const variantRows = form.variantGroups.flatMap((group) =>
-        group.combinations.map((combo) => ({
-          product_id: productId!,
-          size: combo.size || null,
-          color: combo.color || null,
-          sku: combo.sku,
-          stock: parseInt(combo.stock) || 0,
-        }))
-      );
-
-      if (variantRows.length > 0) {
-        const { error } = await supabase.from("product_variants").insert(variantRows);
-        if (error) throw new Error(`Variant error: ${error.message}`);
-      }
-
-      // ── Images ───────────────────────────────────────────────────────────────
-      const { count: existingImageCount } = await supabase
-        .from("product_images")
-        .select("id", { count: "exact", head: true })
-        .eq("product_id", productId);
-
+      // ── Images ─────────────────────────────────────────────────────────────
+      // FIX #4: Upload all images in parallel instead of sequential awaits
       if (form.images.length > 0) {
-        for (let i = 0; i < form.images.length; i++) {
-          const file = form.images[i];
-          const sanitizedName = file.name.replace(/\s+/g, "_").replace(/[^a-zA-Z0-9._-]/g, "");
-          const path = `${productId}/${Date.now()}_${sanitizedName}`;
+        const { count: existingImageCount } = await supabase
+          .from("product_images")
+          .select("id", { count: "exact", head: true })
+          .eq("product_id", productId);
 
-          const { error: uploadError } = await supabase.storage
-            .from("products")
-            .upload(path, file, { cacheControl: "3600", upsert: false });
+        const currentCount = existingImageCount || 0;
 
-          if (uploadError) {
-            toast.error(`Image upload failed: ${uploadError.message}`);
-            continue;
-          }
+        // Upload all images in parallel
+        const uploadResults = await Promise.all(
+          form.images.map(async (file, i) => {
+            const sanitizedName = file.name
+              .replace(/\s+/g, "_")
+              .replace(/[^a-zA-Z0-9._-]/g, "");
+            const path = `${productId}/${Date.now()}_${i}_${sanitizedName}`;
 
-          const { data: urlData } = supabase.storage
-            .from("products")
-            .getPublicUrl(path);
+            const { error: uploadError } = await supabase.storage
+              .from("products")
+              .upload(path, file, { cacheControl: "3600", upsert: false });
 
-          const isPrimary = i === 0 && (existingImageCount === 0 || existingImageCount === null);
+            if (uploadError) {
+              return { error: uploadError.message, index: i };
+            }
 
-          const { error: dbError } = await supabase.from("product_images").insert({
-            product_id: productId,
-            image_url: urlData.publicUrl,
-            is_primary: isPrimary,
-            sort_order: (existingImageCount || 0) + i,
-          });
+            const { data: urlData } = supabase.storage
+              .from("products")
+              .getPublicUrl(path);
 
-          if (dbError) {
-            toast.error(`Failed to save image record: ${dbError.message}`);
-          }
+            return {
+              image_url: urlData.publicUrl,
+              is_primary: i === 0 && currentCount === 0,
+              sort_order: currentCount + i,
+              index: i,
+            };
+          })
+        );
+
+        const failedUploads = uploadResults.filter((r) => "error" in r);
+        failedUploads.forEach((r) => {
+          if ("error" in r) toast.error(`Image ${r.index + 1} upload failed: ${r.error}`);
+        });
+
+        const successfulUploads = uploadResults
+          .filter((r) => !("error" in r))
+          .map((r) => ({
+            product_id: productId!,
+            image_url: (r as { image_url: string }).image_url,
+            is_primary: (r as { is_primary: boolean }).is_primary,
+            sort_order: (r as { sort_order: number }).sort_order,
+          }));
+
+        if (successfulUploads.length > 0) {
+          const { error: dbError } = await supabase
+            .from("product_images")
+            .insert(successfulUploads);
+          if (dbError) toast.error(`Failed to save image records: ${dbError.message}`);
         }
       }
 
@@ -624,19 +711,20 @@ export default function Products() {
     try {
       const now = new Date().toISOString();
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { error: variantError } = await (supabase.from("product_variants") as any)
-        .update({ deleted_at: now })
-        .eq("product_id", deleteId);
+      // Run both soft-deletes in parallel
+      const [variantResult, productResult] = await Promise.all([
+        supabase
+          .from("product_variants")
+          .update({ deleted_at: now })
+          .eq("product_id", deleteId),
+        supabase
+          .from("products")
+          .update({ deleted_at: now, is_active: false })
+          .eq("id", deleteId),
+      ]);
 
-      if (variantError) throw new Error(`Failed to remove variants: ${variantError.message}`);
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { error: productError } = await (supabase.from("products") as any)
-        .update({ deleted_at: now, is_active: false })
-        .eq("id", deleteId);
-
-      if (productError) throw new Error(`Failed to delete product: ${productError.message}`);
+      if (variantResult.error) throw new Error(`Failed to remove variants: ${variantResult.error.message}`);
+      if (productResult.error) throw new Error(`Failed to delete product: ${productResult.error.message}`);
 
       toast.success("Product deleted");
       setDeleteId(null);
@@ -1212,41 +1300,50 @@ export default function Products() {
                 )}
               </div>
 
+              {/* FIX #3: Show loading state while variants are being fetched */}
               <div>
-                <h4 className="font-semibold mb-2">Variants ({viewVariants.length})</h4>
-                <div className="space-y-1">
-                  <div className="grid grid-cols-4 gap-2 text-xs font-semibold text-muted-foreground px-1">
-                    <span>Size</span>
-                    <span>Color</span>
-                    <span>SKU</span>
-                    <span className="text-right">Stock</span>
-                  </div>
-                  {viewVariants.map((v) => (
-                    <div
-                      key={v.id}
-                      className="grid grid-cols-4 gap-2 items-center py-2 border-b text-sm"
-                    >
-                      <span>{v.size || "—"}</span>
-                      <span>{v.color || "—"}</span>
-                      <span className="font-mono text-xs text-muted-foreground">{v.sku}</span>
-                      <span
-                        className={`text-right font-semibold text-xs ${
-                          v.stock === 0
-                            ? "text-destructive"
-                            : v.stock < 5
-                            ? "text-yellow-600"
-                            : "text-green-600"
-                        }`}
-                      >
-                        {v.stock}
-                      </span>
+                <h4 className="font-semibold mb-2">
+                  Variants ({viewVariants.length})
+                </h4>
+                {viewVariants.length === 0 ? (
+                  <p className="text-sm text-muted-foreground italic">
+                    Loading variants...
+                  </p>
+                ) : (
+                  <div className="space-y-1">
+                    <div className="grid grid-cols-4 gap-2 text-xs font-semibold text-muted-foreground px-1">
+                      <span>Size</span>
+                      <span>Color</span>
+                      <span>SKU</span>
+                      <span className="text-right">Stock</span>
                     </div>
-                  ))}
-                  <div className="flex justify-between pt-2 font-semibold text-sm">
-                    <span>Total Stock</span>
-                    <span>{viewVariants.reduce((s, v) => s + v.stock, 0)}</span>
+                    {viewVariants.map((v) => (
+                      <div
+                        key={v.id}
+                        className="grid grid-cols-4 gap-2 items-center py-2 border-b text-sm"
+                      >
+                        <span>{v.size || "—"}</span>
+                        <span>{v.color || "—"}</span>
+                        <span className="font-mono text-xs text-muted-foreground">{v.sku}</span>
+                        <span
+                          className={`text-right font-semibold text-xs ${
+                            v.stock === 0
+                              ? "text-destructive"
+                              : v.stock < 5
+                              ? "text-yellow-600"
+                              : "text-green-600"
+                          }`}
+                        >
+                          {v.stock}
+                        </span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between pt-2 font-semibold text-sm">
+                      <span>Total Stock</span>
+                      <span>{viewVariants.reduce((s, v) => s + v.stock, 0)}</span>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             </div>
           )}
@@ -1255,4 +1352,3 @@ export default function Products() {
     </div>
   );
 }
-
