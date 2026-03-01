@@ -45,7 +45,7 @@ export function AdminSidebar({ onSignOut }: AdminSidebarProps) {
       >
         {!collapsed && (
           <span className="text-lg font-bold tracking-tight text-sidebar-primary">
-            Armina Admin Panel
+            Dhaka Fashion House Admin
           </span>
         )}
 

@@ -7,8 +7,6 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
     PostgrestVersion: "14.1"
   }
@@ -86,33 +84,39 @@ export type Database = {
       orders: {
         Row: {
           created_at: string
+          display_id: string | null
           id: string
           notes: string | null
+          order_id: string | null
           order_status: string
           shipping_address: string | null
           total_amount: number
           updated_at: string
-          user_id: string
+          user_id: string | null
         }
         Insert: {
           created_at?: string
+          display_id?: string | null
           id?: string
           notes?: string | null
+          order_id?: string | null
           order_status?: string
           shipping_address?: string | null
           total_amount?: number
           updated_at?: string
-          user_id: string
+          user_id?: string | null
         }
         Update: {
           created_at?: string
+          display_id?: string | null
           id?: string
           notes?: string | null
+          order_id?: string | null
           order_status?: string
           shipping_address?: string | null
           total_amount?: number
           updated_at?: string
-          user_id?: string
+          user_id?: string | null
         }
         Relationships: [
           {
@@ -207,6 +211,7 @@ export type Database = {
         Row: {
           color: string | null
           created_at: string
+          deleted_at: string | null
           id: string
           price_override: number | null
           product_id: string
@@ -217,6 +222,7 @@ export type Database = {
         Insert: {
           color?: string | null
           created_at?: string
+          deleted_at?: string | null
           id?: string
           price_override?: number | null
           product_id: string
@@ -227,6 +233,7 @@ export type Database = {
         Update: {
           color?: string | null
           created_at?: string
+          deleted_at?: string | null
           id?: string
           price_override?: number | null
           product_id?: string
@@ -249,13 +256,15 @@ export type Database = {
           base_price: number
           category_id: string | null
           created_at: string
+          deleted_at: string | null
           description: string | null
-          discounted_price: number | null    // ← add this
-          short_description: string | null   // ← add this
+          discounted_price: number | null
+          display_id: string | null
           id: string
           is_active: boolean
           is_featured: boolean
           name: string
+          short_description: string | null
           slug: string
           updated_at: string
         }
@@ -263,11 +272,15 @@ export type Database = {
           base_price?: number
           category_id?: string | null
           created_at?: string
+          deleted_at?: string | null
           description?: string | null
+          discounted_price?: number | null
+          display_id?: string | null
           id?: string
           is_active?: boolean
           is_featured?: boolean
           name: string
+          short_description?: string | null
           slug: string
           updated_at?: string
         }
@@ -275,11 +288,15 @@ export type Database = {
           base_price?: number
           category_id?: string | null
           created_at?: string
+          deleted_at?: string | null
           description?: string | null
+          discounted_price?: number | null
+          display_id?: string | null
           id?: string
           is_active?: boolean
           is_featured?: boolean
           name?: string
+          short_description?: string | null
           slug?: string
           updated_at?: string
         }
@@ -320,6 +337,191 @@ export type Database = {
         }
         Relationships: []
       }
+      shop_subscriptions: {
+        Row: {
+          amount_paid: number | null
+          cancelled_at: string | null
+          created_at: string
+          current_period_end: string
+          current_period_start: string
+          id: string
+          notes: string | null
+          payment_method: string | null
+          plan_id: string
+          shop_id: string
+          started_at: string
+          status: Database["public"]["Enums"]["subscription_status_enum"]
+          transaction_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          amount_paid?: number | null
+          cancelled_at?: string | null
+          created_at?: string
+          current_period_end?: string
+          current_period_start?: string
+          id?: string
+          notes?: string | null
+          payment_method?: string | null
+          plan_id: string
+          shop_id: string
+          started_at?: string
+          status?: Database["public"]["Enums"]["subscription_status_enum"]
+          transaction_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          amount_paid?: number | null
+          cancelled_at?: string | null
+          created_at?: string
+          current_period_end?: string
+          current_period_start?: string
+          id?: string
+          notes?: string | null
+          payment_method?: string | null
+          plan_id?: string
+          shop_id?: string
+          started_at?: string
+          status?: Database["public"]["Enums"]["subscription_status_enum"]
+          transaction_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shop_subscriptions_plan_id_fkey"
+            columns: ["plan_id"]
+            isOneToOne: false
+            referencedRelation: "subscription_plans"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shop_subscriptions_shop_id_fkey"
+            columns: ["shop_id"]
+            isOneToOne: false
+            referencedRelation: "shops"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shops: {
+        Row: {
+          address: string | null
+          banner_url: string | null
+          created_at: string
+          current_plan: Database["public"]["Enums"]["subscription_plan_enum"] | null
+          custom_domain: string | null
+          description: string | null
+          email: string | null
+          id: string
+          logo_url: string | null
+          name: string
+          owner_id: string
+          phone: string | null
+          region: string
+          shop_code: string
+          shop_status: Database["public"]["Enums"]["shop_status_enum"]
+          slug: string
+          updated_at: string
+        }
+        Insert: {
+          address?: string | null
+          banner_url?: string | null
+          created_at?: string
+          current_plan?: Database["public"]["Enums"]["subscription_plan_enum"] | null
+          custom_domain?: string | null
+          description?: string | null
+          email?: string | null
+          id?: string
+          logo_url?: string | null
+          name: string
+          owner_id: string
+          phone?: string | null
+          region: string
+          shop_code: string
+          shop_status?: Database["public"]["Enums"]["shop_status_enum"]
+          slug: string
+          updated_at?: string
+        }
+        Update: {
+          address?: string | null
+          banner_url?: string | null
+          created_at?: string
+          current_plan?: Database["public"]["Enums"]["subscription_plan_enum"] | null
+          custom_domain?: string | null
+          description?: string | null
+          email?: string | null
+          id?: string
+          logo_url?: string | null
+          name?: string
+          owner_id?: string
+          phone?: string | null
+          region?: string
+          shop_code?: string
+          shop_status?: Database["public"]["Enums"]["shop_status_enum"]
+          slug?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shops_owner_id_fkey"
+            columns: ["owner_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      subscription_plans: {
+        Row: {
+          allow_analytics: boolean
+          allow_custom_domain: boolean
+          allow_discount_codes: boolean
+          created_at: string
+          description: string | null
+          display_name: string
+          id: string
+          is_active: boolean
+          max_orders_per_month: number | null
+          max_products: number | null
+          monthly_price: number
+          plan_name: Database["public"]["Enums"]["subscription_plan_enum"]
+          support_level: string
+          updated_at: string
+        }
+        Insert: {
+          allow_analytics?: boolean
+          allow_custom_domain?: boolean
+          allow_discount_codes?: boolean
+          created_at?: string
+          description?: string | null
+          display_name: string
+          id?: string
+          is_active?: boolean
+          max_orders_per_month?: number | null
+          max_products?: number | null
+          monthly_price?: number
+          plan_name: Database["public"]["Enums"]["subscription_plan_enum"]
+          support_level?: string
+          updated_at?: string
+        }
+        Update: {
+          allow_analytics?: boolean
+          allow_custom_domain?: boolean
+          allow_discount_codes?: boolean
+          created_at?: string
+          description?: string | null
+          display_name?: string
+          id?: string
+          is_active?: boolean
+          max_orders_per_month?: number | null
+          max_products?: number | null
+          monthly_price?: number
+          plan_name?: Database["public"]["Enums"]["subscription_plan_enum"]
+          support_level?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           id: string
@@ -343,6 +545,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      generate_shop_code: {
+        Args: { _name: string; _region: string }
+        Returns: string
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
@@ -350,10 +556,34 @@ export type Database = {
         }
         Returns: boolean
       }
-      is_admin: { Args: never; Returns: boolean }
+      is_admin: { Args: Record<PropertyKey, never>; Returns: boolean }
+      is_shop_live: {
+        Args: { _shop_id: string }
+        Returns: boolean
+      }
     }
     Enums: {
       app_role: "admin" | "customer"
+      order_status_enum:
+        | "pending"
+        | "confirmed"
+        | "processing"
+        | "shipped"
+        | "delivered"
+        | "cancelled"
+        | "refunded"
+      shop_status_enum:
+        | "active"
+        | "inactive"
+        | "suspended"
+        | "pending_setup"
+      subscription_plan_enum: "starter" | "growth" | "pro"
+      subscription_status_enum:
+        | "active"
+        | "past_due"
+        | "expired"
+        | "cancelled"
+        | "trial"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -482,6 +712,10 @@ export const Constants = {
   public: {
     Enums: {
       app_role: ["admin", "customer"],
+      order_status_enum: ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "refunded"],
+      shop_status_enum: ["active", "inactive", "suspended", "pending_setup"],
+      subscription_plan_enum: ["starter", "growth", "pro"],
+      subscription_status_enum: ["active", "past_due", "expired", "cancelled", "trial"],
     },
   },
 } as const

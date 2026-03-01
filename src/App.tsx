@@ -14,6 +14,7 @@ import Products from "./pages/admin/Products";
 import Sales from "./pages/admin/Sales";
 import Settings from "./pages/admin/Settings";
 import Profile from "./pages/admin/Profile";
+import SubscriptionPage from "./pages/admin/Subscription";
 
 const queryClient = new QueryClient();
 
@@ -40,6 +41,7 @@ const App = () => (
               <Route path="dashboard" element={<Dashboard />} />
               <Route path="products" element={<Products />} />
               <Route path="sales" element={<Sales />} />
+              <Route path="subscription" element={<SubscriptionPage />} />
               <Route path="settings" element={<Settings />} />
               <Route path="profile" element={<Profile />} />
             </Route>
